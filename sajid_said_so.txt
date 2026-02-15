@@ -1,0 +1,753 @@
+================================================================================
+REAL-TIME BI-DIRECTIONAL AI SPEECH TRANSLATION SYSTEM
+PRODUCTION-GRADE ARCHITECTURE DOCUMENT
+================================================================================
+
+Project: Real-time Speech Translation App
+Target Platforms: Android, iOS, Windows, macOS
+Performance Target: < 1.5 seconds end-to-end latency
+Scale Target: 10,000 concurrent sessions
+
+================================================================================
+1. SYSTEM ARCHITECTURE OVERVIEW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────┐
+│                        LOAD BALANCER (nginx)                     │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+        ┌────────────────────┼────────────────────┐
+        │                    │                    │
+┌───────▼────────┐  ┌────────▼────────┐  ┌───────▼────────┐
+│  API Gateway   │  │  WebSocket      │  │  TURN/STUN     │
+│  (Auth/REST)   │  │  Server         │  │  (Signaling)   │
+└───────┬────────┘  └────────┬────────┘  └────────────────┘
+        │                    │
+        │         ┌──────────┴──────────┐
+        │         │                     │
+┌───────▼─────────▼──────┐    ┌─────────▼──────────┐
+│   Session Manager      │    │  Message Queue     │
+│   (Redis + PostgreSQL) │    │  (RabbitMQ/Redis)  │
+└────────────────────────┘    └─────────┬──────────┘
+                                        │
+                    ┌───────────────────┼───────────────────┐
+                    │                   │                   │
+            ┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼──────┐
+            │  STT Service   │  │  Translation   │  │ TTS Service │
+            │  (Whisper)     │  │  (NLLB/Marian) │  │ (Coqui/Edge)│
+            └────────────────┘  └────────────────┘  └─────────────┘
+
+================================================================================
+2. TECH STACK DECISION MATRIX
+================================================================================
+
+Component          | Choice                    | Why                                      | Alternative
+-------------------|---------------------------|------------------------------------------|------------------
+Frontend           | Flutter                   | Single codebase, native performance      | React Native
+Backend Core       | Node.js (TypeScript)      | Non-blocking I/O, WebSocket support      | Go
+AI Orchestrator    | Python (FastAPI)          | ML ecosystem, async support              | Node with ONNX
+STT                | Faster-Whisper            | 4x faster, streaming support             | Whisper.cpp
+Translation        | NLLB-200 (distilled)      | 200 languages, Meta-backed               | LibreTranslate
+TTS                | Coqui TTS + Edge fallback | Quality + speed balance                  | Google Cloud TTS
+WebSocket          | Socket.io                 | Auto-reconnect, room support             | Native WS
+Message Queue      | Redis Streams             | Low latency, pub/sub, persistence        | RabbitMQ
+Session Store      | Redis                     | In-memory speed, TTL support             | PostgreSQL only
+Database           | PostgreSQL                | ACID, JSON support, mature               | MongoDB
+Container          | Docker + K8s              | Industry standard, auto-scaling          | Docker Swarm
+
+================================================================================
+3. PROJECT STRUCTURE
+================================================================================
+
+realtime-translator/
+├── apps/
+│   ├── mobile/                          # Flutter app
+│   │   ├── lib/
+│   │   │   ├── core/
+│   │   │   │   ├── audio/
+│   │   │   │   │   ├── audio_recorder.dart
+│   │   │   │   │   ├── audio_player.dart
+│   │   │   │   │   └── audio_stream_handler.dart
+│   │   │   │   ├── network/
+│   │   │   │   │   ├── websocket_client.dart
+│   │   │   │   │   ├── api_client.dart
+│   │   │   │   │   └── connection_manager.dart
+│   │   │   │   └── models/
+│   │   │   │       ├── session.dart
+│   │   │   │       ├── user.dart
+│   │   │   │       └── translation_message.dart
+│   │   │   ├── features/
+│   │   │   │   ├── auth/
+│   │   │   │   ├── session/
+│   │   │   │   │   ├── session_screen.dart
+│   │   │   │   │   ├── session_controller.dart
+│   │   │   │   │   └── pairing_widget.dart
+│   │   │   │   └── translation/
+│   │   │   │       ├── translation_screen.dart
+│   │   │   │       ├── translation_controller.dart
+│   │   │   │       └── audio_visualizer.dart
+│   │   │   └── main.dart
+│   │   └── pubspec.yaml
+│   │
+│   └── desktop/                         # Flutter desktop (shared codebase)
+│       └── (same structure as mobile)
+│
+├── services/
+│   ├── gateway/                         # Node.js API Gateway
+│   │   ├── src/
+│   │   │   ├── controllers/
+│   │   │   │   ├── auth.controller.ts
+│   │   │   │   ├── session.controller.ts
+│   │   │   │   └── user.controller.ts
+│   │   │   ├── middleware/
+│   │   │   │   ├── auth.middleware.ts
+│   │   │   │   ├── rate-limit.middleware.ts
+│   │   │   │   └── validation.middleware.ts
+│   │   │   ├── routes/
+│   │   │   │   └── index.ts
+│   │   │   ├── services/
+│   │   │   │   ├── jwt.service.ts
+│   │   │   │   └── redis.service.ts
+│   │   │   └── server.ts
+│   │   ├── Dockerfile
+│   │   └── package.json
+│   │
+│   ├── websocket/                       # Node.js WebSocket Server
+│   │   ├── src/
+│   │   │   ├── handlers/
+│   │   │   │   ├── connection.handler.ts
+│   │   │   │   ├── session.handler.ts
+│   │   │   │   └── translation.handler.ts
+│   │   │   ├── services/
+│   │   │   │   ├── session-manager.service.ts
+│   │   │   │   ├── message-queue.service.ts
+│   │   │   │   └── redis-pubsub.service.ts
+│   │   │   ├── types/
+│   │   │   │   └── events.types.ts
+│   │   │   └── server.ts
+│   │   ├── Dockerfile
+│   │   └── package.json
+│   │
+│   ├── ai-orchestrator/                 # Python FastAPI
+│   │   ├── app/
+│   │   │   ├── api/
+│   │   │   │   ├── routes/
+│   │   │   │   │   ├── stt.py
+│   │   │   │   │   ├── translation.py
+│   │   │   │   │   └── tts.py
+│   │   │   │   └── deps.py
+│   │   │   ├── core/
+│   │   │   │   ├── config.py
+│   │   │   │   └── logging.py
+│   │   │   ├── services/
+│   │   │   │   ├── stt_service.py
+│   │   │   │   ├── translation_service.py
+│   │   │   │   └── tts_service.py
+│   │   │   ├── models/
+│   │   │   │   └── schemas.py
+│   │   │   └── main.py
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── pyproject.toml
+│   │
+│   ├── stt-worker/                      # Dedicated STT microservice
+│   │   ├── app/
+│   │   │   ├── worker.py
+│   │   │   ├── whisper_handler.py
+│   │   │   └── queue_consumer.py
+│   │   ├── Dockerfile.gpu
+│   │   └── requirements.txt
+│   │
+│   ├── translation-worker/              # Dedicated Translation microservice
+│   │   ├── app/
+│   │   │   ├── worker.py
+│   │   │   ├── nllb_handler.py
+│   │   │   └── queue_consumer.py
+│   │   ├── Dockerfile.gpu
+│   │   └── requirements.txt
+│   │
+│   └── tts-worker/                      # Dedicated TTS microservice
+│       ├── app/
+│       │   ├── worker.py
+│       │   ├── coqui_handler.py
+│       │   └── queue_consumer.py
+│       ├── Dockerfile
+│       └── requirements.txt
+│
+├── infrastructure/
+│   ├── docker/
+│   │   └── docker-compose.yml
+│   ├── kubernetes/
+│   │   ├── deployments/
+│   │   │   ├── gateway.yaml
+│   │   │   ├── websocket.yaml
+│   │   │   ├── stt-worker.yaml
+│   │   │   ├── translation-worker.yaml
+│   │   │   └── tts-worker.yaml
+│   │   ├── services/
+│   │   ├── configmaps/
+│   │   ├── secrets/
+│   │   └── hpa/                         # Horizontal Pod Autoscaler
+│   ├── terraform/
+│   │   ├── aws/
+│   │   ├── gcp/
+│   │   └── azure/
+│   └── monitoring/
+│       ├── prometheus/
+│       ├── grafana/
+│       └── elk/
+│
+├── shared/
+│   ├── proto/                           # Protocol Buffers (if using gRPC)
+│   │   └── translation.proto
+│   └── types/                           # Shared TypeScript types
+│       └── events.ts
+│
+├── scripts/
+│   ├── setup-dev.sh
+│   ├── deploy.sh
+│   └── benchmark.py
+│
+├── docs/
+│   ├── architecture.md
+│   ├── api-spec.yaml                    # OpenAPI spec
+│   └── deployment-guide.md
+│
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── cd.yml
+│
+├── docker-compose.yml                   # Local development
+├── docker-compose.prod.yml              # Production setup
+└── README.md
+
+================================================================================
+4. REAL-TIME COMMUNICATION FLOW
+================================================================================
+
+OPTIMIZED FOR <1.5s LATENCY:
+
+User A speaks → [100ms] → Audio chunks (100ms buffers)
+                           ↓
+                    [200ms] STT (Faster-Whisper streaming)
+                           ↓
+                    [150ms] Translation (NLLB-200 distilled)
+                           ↓
+                    [50ms]  WebSocket transmission
+                           ↓
+                    [300ms] TTS generation (Coqui)
+                           ↓
+                    [100ms] Audio playback buffer
+                           ↓
+Total: ~900ms (well under 1.5s target)
+
+KEY OPTIMIZATION: STREAMING PIPELINE
+- Don't wait for complete sentences
+- Process 2-3 second audio chunks
+- Start translation as soon as STT produces text
+- Begin TTS generation immediately
+- Stream audio playback (don't wait for complete generation)
+
+================================================================================
+5. WEBSOCKET PROTOCOL DESIGN
+================================================================================
+
+EVENT TYPES:
+- Connection: connect, disconnect, heartbeat
+- Session: join_session, leave_session, session_paired, partner_connected, partner_disconnected
+- Translation: audio_chunk, transcription, translation, speech_audio
+- Status: processing_start, processing_end, error
+
+MESSAGE STRUCTURES:
+
+JoinSessionMessage:
+{
+  sessionId: string,
+  userId: string,
+  language: string,
+  token: string
+}
+
+AudioChunkMessage:
+{
+  sessionId: string,
+  userId: string,
+  chunk: ArrayBuffer,        // 100ms of audio
+  sequence: number,          // For ordering
+  timestamp: number
+}
+
+TranslationMessage:
+{
+  sessionId: string,
+  sourceUserId: string,
+  targetUserId: string,
+  originalText: string,
+  translatedText: string,
+  sourceLanguage: string,
+  targetLanguage: string,
+  timestamp: number,
+  latency: number           // For monitoring
+}
+
+================================================================================
+6. DATABASE SCHEMA
+================================================================================
+
+POSTGRESQL SCHEMA:
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    preferred_language VARCHAR(10) DEFAULT 'en',
+    created_at TIMESTAMP DEFAULT NOW(),
+    last_active TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+
+CREATE TABLE sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_code VARCHAR(10) UNIQUE NOT NULL,  -- Human-readable code
+    user_a_id UUID REFERENCES users(id),
+    user_b_id UUID REFERENCES users(id),
+    language_a VARCHAR(10) NOT NULL,
+    language_b VARCHAR(10) NOT NULL,
+    status VARCHAR(20) DEFAULT 'waiting',      -- waiting, active, ended
+    created_at TIMESTAMP DEFAULT NOW(),
+    started_at TIMESTAMP,
+    ended_at TIMESTAMP,
+    total_messages INTEGER DEFAULT 0
+);
+
+CREATE INDEX idx_sessions_code ON sessions(session_code);
+CREATE INDEX idx_sessions_status ON sessions(status);
+CREATE INDEX idx_sessions_users ON sessions(user_a_id, user_b_id);
+
+CREATE TABLE translation_logs (
+    id BIGSERIAL PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id),
+    user_id UUID REFERENCES users(id),
+    original_text TEXT NOT NULL,
+    translated_text TEXT NOT NULL,
+    source_language VARCHAR(10) NOT NULL,
+    target_language VARCHAR(10) NOT NULL,
+    stt_latency INTEGER,                       -- milliseconds
+    translation_latency INTEGER,
+    tts_latency INTEGER,
+    total_latency INTEGER,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_translation_logs_session ON translation_logs(session_id);
+CREATE INDEX idx_translation_logs_created ON translation_logs(created_at);
+
+CREATE TABLE session_metrics (
+    id BIGSERIAL PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id),
+    avg_latency INTEGER,
+    max_latency INTEGER,
+    min_latency INTEGER,
+    total_messages INTEGER,
+    error_count INTEGER,
+    duration_seconds INTEGER,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+REDIS SCHEMA (Key-Value Store):
+- Active sessions: session:{sessionId} -> JSON
+- User presence: user:{userId}:online -> boolean (TTL: 30s)
+- Session queue: session:{sessionId}:queue -> List of pending messages
+- Rate limiting: ratelimit:{userId}:{endpoint} -> counter (TTL: 60s)
+
+================================================================================
+7. API DESIGN
+================================================================================
+
+REST API ENDPOINTS:
+
+POST /api/v1/auth/register
+  Body: { username, email, password, preferredLanguage }
+  Response: { userId, token }
+
+POST /api/v1/auth/login
+  Body: { email, password }
+  Response: { userId, token, refreshToken }
+
+POST /api/v1/sessions/create
+  Headers: { Authorization: Bearer <token> }
+  Body: { language }
+  Response: { sessionId, sessionCode, wsUrl }
+
+POST /api/v1/sessions/join
+  Headers: { Authorization: Bearer <token> }
+  Body: { sessionCode, language }
+  Response: { sessionId, partnerId, wsUrl }
+
+GET /api/v1/sessions/{sessionId}
+  Response: { session, participants, status }
+
+DELETE /api/v1/sessions/{sessionId}
+  Response: { success, metrics }
+
+GET /api/v1/sessions/{sessionId}/history
+  Query: { limit, offset }
+  Response: { translations[], total }
+
+WEBSOCKET ENDPOINT:
+ws://api.domain.com/ws?token=<jwt>&sessionId=<id>
+
+================================================================================
+8. LATENCY OPTIMIZATION TECHNIQUES
+================================================================================
+
+1. STREAMING EVERYTHING
+   - Audio: 100ms chunks (not full sentences)
+   - STT: Streaming Whisper with VAD (Voice Activity Detection)
+   - Translation: Sentence-by-sentence (not paragraph)
+   - TTS: Stream audio as it generates
+
+2. MODEL OPTIMIZATION
+   - Use quantized models (INT8) - 4x faster, minimal quality loss
+   - Faster-Whisper with CTranslate2 backend
+   - NLLB-200-distilled-600M (not 1.3B or 3.3B)
+   - Batch processing where possible
+
+3. INFRASTRUCTURE
+   - GPU instances for AI workers (T4 or better)
+   - Redis for sub-millisecond session lookups
+   - WebSocket connection pooling
+   - CDN for static assets
+   - Regional deployment (multi-region for global users)
+
+4. NETWORK
+   - Binary protocol (Protocol Buffers) instead of JSON
+   - Compression (zlib) for text payloads
+   - Connection keep-alive
+   - Fallback to HTTP/2 Server-Sent Events if WebSocket fails
+
+5. CACHING
+   - Common phrase translations (Redis cache)
+   - TTS audio cache for frequent phrases
+   - Model warm-up (keep models loaded in memory)
+
+================================================================================
+9. SECURITY ARCHITECTURE
+================================================================================
+
+SECURITY LAYERS:
+
+1. Transport Layer
+   - TLS 1.3 for all connections
+   - WSS (WebSocket Secure)
+   - Certificate pinning (mobile apps)
+
+2. Authentication
+   - JWT with short expiry (15 min)
+   - Refresh tokens (7 days)
+   - Token rotation on refresh
+   - Device fingerprinting
+
+3. Authorization
+   - Session-based access control
+   - User can only access their own sessions
+   - Rate limiting per user/IP
+
+4. Data Protection
+   - Audio never stored (ephemeral)
+   - Text logs encrypted at rest (AES-256)
+   - Optional E2E encryption for text
+   - GDPR compliance (data deletion)
+
+5. Infrastructure
+   - WAF (Web Application Firewall)
+   - DDoS protection
+   - Network segmentation
+   - Secrets management (Vault/AWS Secrets)
+
+RATE LIMITING STRATEGY:
+- API Gateway: 100 req/min per user
+- WebSocket: 1 connection per user per session
+- Audio chunks: Max 10/second (prevents abuse)
+- Session creation: 5/hour per user
+
+================================================================================
+10. MONITORING & OBSERVABILITY
+================================================================================
+
+METRICS (Prometheus):
+- websocket_connections_active
+- translation_latency_seconds (histogram)
+- stt_processing_time_seconds
+- translation_processing_time_seconds
+- tts_processing_time_seconds
+- session_duration_seconds
+- error_rate_total
+- gpu_utilization_percent
+- queue_depth
+
+LOGGING (ELK Stack):
+- Structured JSON logs
+- Correlation IDs for request tracing
+- Log levels: ERROR, WARN, INFO, DEBUG
+- Sensitive data redaction
+
+TRACING (Jaeger):
+- End-to-end request tracing
+- Service dependency mapping
+- Latency bottleneck identification
+
+ALERTING (AlertManager):
+- Latency > 2s for 5 minutes
+- Error rate > 5%
+- GPU utilization > 90%
+- WebSocket disconnection rate > 10%
+- Queue depth > 1000
+
+================================================================================
+11. SCALABILITY STRATEGY
+================================================================================
+
+HORIZONTAL SCALING:
+
+Component              | Scaling Strategy
+-----------------------|----------------------------------
+API Gateway            | Stateless, scale to N instances
+WebSocket Server       | Sticky sessions, Redis pub/sub
+STT Workers            | Queue-based, auto-scale on depth
+Translation Workers    | Queue-based, auto-scale on depth
+TTS Workers            | Queue-based, auto-scale on depth
+Redis                  | Redis Cluster (sharding)
+PostgreSQL             | Read replicas, connection pooling
+
+AUTO-SCALING RULES (Kubernetes HPA):
+
+STT Workers:
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - GPU utilization: 70%
+    - Queue depth: 50
+
+WebSocket Servers:
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+    - CPU: 60%
+    - Active connections: 1000 per pod
+
+LOAD DISTRIBUTION:
+- Geographic routing (Route53/CloudFlare)
+- Session affinity (consistent hashing)
+- Queue partitioning by language pair
+- GPU worker pools by model type
+
+================================================================================
+12. COST ESTIMATION (10K CONCURRENT SESSIONS)
+================================================================================
+
+INFRASTRUCTURE (AWS/GCP):
+
+Component                    | Specs              | Count | $/month
+-----------------------------|--------------------| ------|----------
+Load Balancer                | ALB                | 1     | $25
+API Gateway (t3.medium)      | 2 vCPU, 4GB        | 3     | $90
+WebSocket (t3.large)         | 2 vCPU, 8GB        | 5     | $300
+Redis Cluster                | r6g.large          | 3     | $450
+PostgreSQL (RDS)             | db.t3.large        | 1     | $150
+STT Workers (g4dn.xlarge)    | 4 vCPU, 16GB, T4   | 10    | $5,000
+Translation (g4dn.xlarge)    | 4 vCPU, 16GB, T4   | 8     | $4,000
+TTS Workers (t3.xlarge)      | 4 vCPU, 16GB       | 5     | $375
+Message Queue (ElastiCache)  | cache.t3.medium    | 2     | $100
+Monitoring (Managed)         | Prometheus/Grafana | 1     | $200
+Storage (S3/EBS)             | 500GB              | -     | $50
+Data Transfer                | 10TB/month         | -     | $900
+-----------------------------|--------------------| ------|----------
+TOTAL                                                      | ~$11,640/month
+
+COST OPTIMIZATION:
+- Spot instances for workers (70% savings)
+- Reserved instances (40% savings on stable load)
+- Auto-scaling during off-peak
+- Model caching reduces compute
+OPTIMIZED: ~$4,000-5,000/month
+
+FREE TIER START (< 100 concurrent):
+- Self-hosted on single VPS ($40/month)
+- CPU-only inference (slower but free)
+- SQLite instead of PostgreSQL
+- Single Redis instance
+TOTAL: $40-100/month
+
+================================================================================
+13. DEVELOPMENT ROADMAP
+================================================================================
+
+PHASE 1: MVP (4-6 weeks)
+- Flutter app (mobile + desktop + PWA)
+- Professional audio: 48kHz, 24-bit, Opus codec
+- Node.js WebSocket server with fallback
+- Python STT service (Faster-Whisper with VAD)
+- NLLB-200 translation engine
+- Coqui TTS with voice quality
+- Session pairing (6-digit codes)
+- Social login (Google, Apple, Facebook)
+- Offline mode with message queue
+- Conversation history & export
+- Quality indicators (latency, confidence)
+- Docker Compose setup
+- 15 languages: EN, ES, FR, DE, IT, PT, RU, AR, ZH, JA, KO, HI, TR, NL, PL
+
+PHASE 2: PRODUCTION READY (6-8 weeks)
+- Full authentication system
+- Faster-Whisper streaming
+- NLLB-200 translation
+- Coqui TTS integration
+- Redis session management
+- PostgreSQL with migrations
+- Error handling & reconnection
+- 10 languages support
+- Basic monitoring (Prometheus)
+
+PHASE 3: SCALE & OPTIMIZE (8-10 weeks)
+- Microservices architecture
+- Message queue (Redis Streams)
+- GPU optimization
+- Model quantization
+- Kubernetes deployment
+- Auto-scaling setup
+- Advanced monitoring (Jaeger, ELK)
+- Load testing (10K sessions)
+- 50+ languages
+
+PHASE 4: ENTERPRISE FEATURES (Ongoing)
+- End-to-end encryption
+- Multi-party sessions (3+ users)
+- Recording & playback
+- Custom vocabulary
+- Admin dashboard
+- Analytics & insights
+- White-label options
+- SLA guarantees
+
+================================================================================
+14. TECHNICAL CHALLENGES & MITIGATIONS
+================================================================================
+
+Challenge              | Risk   | Mitigation
+-----------------------|--------|--------------------------------------------
+Latency spikes         | High   | Queue monitoring, auto-scaling, fallback models
+GPU costs              | High   | Spot instances, CPU fallback, quantization
+WebSocket scaling      | Medium | Redis pub/sub, sticky sessions, pooling
+Model accuracy         | Medium | Ensemble models, confidence scoring, feedback
+Network instability    | High   | Auto-reconnect, message queuing, offline mode
+Language coverage      | Low    | NLLB-200 supports 200 languages out of box
+Audio quality          | Medium | Noise suppression, VAD, adaptive bitrate
+Cold start             | Medium | Model warm-up, keep-alive, pre-loaded workers
+Data privacy           | High   | No audio storage, encryption, GDPR compliance
+Abuse/spam             | Medium | Rate limiting, captcha, user reputation
+
+================================================================================
+15. FUTURE AI IMPROVEMENTS
+================================================================================
+
+SHORT-TERM (6-12 months):
+
+1. Streaming Translation Models
+   - SimulMT (simultaneous translation)
+   - Reduces latency by 40%
+
+2. Voice Cloning
+   - Preserve speaker's voice characteristics
+   - Coqui XTTS or ElevenLabs
+
+3. Emotion Detection
+   - Preserve tone/emotion in translation
+   - Wav2Vec2 for emotion classification
+
+LONG-TERM (1-2 years):
+
+1. End-to-End Speech-to-Speech
+   - Direct audio → audio translation
+   - No intermediate text (faster, more natural)
+   - Models: Meta's SeamlessM4T, Google's Translatotron
+
+2. On-Device AI
+   - Run models on mobile devices
+   - Zero latency, offline capable
+   - TensorFlow Lite, ONNX Runtime Mobile
+
+3. Multimodal Translation
+   - Video call with visual context
+   - Gesture recognition
+   - Screen sharing translation
+
+================================================================================
+16. KEY ENGINEERING DECISIONS
+================================================================================
+
+WHY NODE.JS FOR WEBSOCKET?
+- Event-driven architecture perfect for real-time
+- Massive ecosystem for WebSocket libraries
+- Easy to scale horizontally
+- JavaScript/TypeScript consistency with frontend
+
+WHY SEPARATE AI WORKERS?
+- Independent scaling (GPU vs CPU)
+- Language-specific isolation
+- Easier to upgrade models
+- Cost optimization (scale only what's needed)
+
+WHY REDIS OVER RABBITMQ?
+- Lower latency (sub-millisecond)
+- Simpler setup
+- Built-in pub/sub
+- Session storage + queue in one
+
+WHY FLUTTER OVER REACT NATIVE?
+- Better audio handling
+- True native performance
+- Desktop support out of box
+- Smaller app size
+
+WHY FASTER-WHISPER OVER WHISPER?
+- 4x faster inference
+- Same accuracy
+- Lower GPU memory
+- Streaming support
+
+================================================================================
+17. QUICK START COMMANDS
+================================================================================
+
+# Clone and setup
+git clone <repo>
+cd realtime-translator
+
+# Start all services (development)
+docker-compose up -d
+
+# Run Flutter app
+cd apps/mobile
+flutter pub get
+flutter run
+
+# Run tests
+npm run test:all
+
+# Deploy to production
+./scripts/deploy.sh production
+
+# Monitor logs
+kubectl logs -f deployment/websocket-server
+
+# Scale workers
+kubectl scale deployment stt-worker --replicas=10
+
+================================================================================
+END OF DOCUMENT
+================================================================================

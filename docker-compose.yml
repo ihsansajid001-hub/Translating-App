@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Node.js Backend (API + WebSocket)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - WS_PORT=3001
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      - redis-local
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Local Redis (for development only - use Upstash in production)
+  redis-local:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - translator-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # Local AI Services (Optional - comment out if using Hugging Face API)
+  ai-stt:
+    build:
+      context: ./ai-local
+      dockerfile: Dockerfile.stt
+    ports:
+      - "5000:5000"
+    environment:
+      - MODEL_NAME=base
+      - DEVICE=cpu
+    volumes:
+      - ./ai-local/models:/app/models
+      - ./ai-local:/app
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  ai-translation:
+    build:
+      context: ./ai-local
+      dockerfile: Dockerfile.translation
+    ports:
+      - "5001:5001"
+    environment:
+      - MODEL_NAME=nllb-200-distilled-600M
+      - DEVICE=cpu
+    volumes:
+      - ./ai-local/models:/app/models
+      - ./ai-local:/app
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  ai-tts:
+    build:
+      context: ./ai-local
+      dockerfile: Dockerfile.tts
+    ports:
+      - "5002:5002"
+    environment:
+      - TTS_ENGINE=piper
+    volumes:
+      - ./ai-local/models:/app/models
+      - ./ai-local:/app
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+
+networks:
+  translator-network:
+    driver: bridge
