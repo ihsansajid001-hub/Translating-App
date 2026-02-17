@@ -7,21 +7,20 @@ export const register = async (req, res, next) => {
   try {
     const { email, password, username, preferredLanguage } = req.body;
 
-    // Register with Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
+    // Use admin API to create user (bypasses rate limits)
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
-      options: {
-        data: {
-          username,
-          preferred_language: preferredLanguage || 'en'
-        }
+      email_confirm: true, // Auto-confirm email
+      user_metadata: {
+        username,
+        preferred_language: preferredLanguage || 'en'
       }
     });
 
     if (authError) throw new AppError(authError.message, 400);
 
-    // Create user profile in database
+    // Create user profile in database (service key bypasses RLS)
     const { data: profile, error: profileError } = await supabase
       .from('users')
       .insert([{
@@ -33,7 +32,11 @@ export const register = async (req, res, next) => {
       .select()
       .single();
 
-    if (profileError) throw new AppError(profileError.message, 400);
+    if (profileError) {
+      logger.error(`Profile creation failed: ${profileError.message}`);
+      // If profile creation fails, still return success but log the error
+      // The user can still login, we'll create profile on first login
+    }
 
     const token = generateToken(authData.user.id);
     const refreshToken = generateRefreshToken(authData.user.id);
@@ -70,11 +73,35 @@ export const login = async (req, res, next) => {
     if (error) throw new AppError('Invalid credentials', 401);
 
     // Get user profile
-    const { data: profile } = await supabase
+    let { data: profile, error: profileError } = await supabase
       .from('users')
       .select('*')
       .eq('id', data.user.id)
       .single();
+
+    // If profile doesn't exist, create it
+    if (profileError || !profile) {
+      const username = data.user.user_metadata?.username || email.split('@')[0];
+      const preferredLanguage = data.user.user_metadata?.preferred_language || 'en';
+      
+      const { data: newProfile } = await supabase
+        .from('users')
+        .insert([{
+          id: data.user.id,
+          email: data.user.email,
+          username,
+          preferred_language: preferredLanguage
+        }])
+        .select()
+        .single();
+      
+      profile = newProfile || {
+        id: data.user.id,
+        email: data.user.email,
+        username,
+        preferred_language: preferredLanguage
+      };
+    }
 
     const token = generateToken(data.user.id);
     const refreshToken = generateRefreshToken(data.user.id);

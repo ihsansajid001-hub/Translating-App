@@ -17,9 +17,9 @@ const httpServer = createServer(app);
 // Socket.IO setup
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CORS_ORIGIN?.split(',') || '*',
+    origin: '*',
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: false
   },
   pingTimeout: 60000,
   pingInterval: 25000,
@@ -27,11 +27,16 @@ const io = new Server(httpServer, {
 });
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
+}));
 app.use(compression());
 app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || '*',
-  credentials: true
+  origin: '*',
+  credentials: false,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

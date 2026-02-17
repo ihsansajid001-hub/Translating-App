@@ -56,7 +56,7 @@ class AppRouter {
       case history:
         final args = settings.arguments as Map<String, dynamic>?;
         return MaterialPageRoute(
-          builder: (_) => HistoryScreen(sessionId: args?['sessionId']),
+          builder: (_) => HistoryScreen(sessionId: args?['sessionId'] as String?),
         );
       
       default:

@@ -21,9 +21,13 @@ Future<void> setupDependencies() async {
   final sharedPreferences = await SharedPreferences.getInstance();
   getIt.registerSingleton<SharedPreferences>(sharedPreferences);
   
+  // Get environment variables with fallbacks
+  final apiBaseUrl = dotenv.get('API_BASE_URL', fallback: 'http://localhost:3000/api/v1');
+  final wsUrl = dotenv.get('WS_URL', fallback: 'ws://localhost:3001');
+  
   // Dio
   final dio = Dio(BaseOptions(
-    baseUrl: dotenv.env['API_BASE_URL'] ?? 'http://localhost:3000/api/v1',
+    baseUrl: apiBaseUrl,
     connectTimeout: const Duration(seconds: 30),
     receiveTimeout: const Duration(seconds: 30),
   ));
@@ -40,7 +44,7 @@ Future<void> setupDependencies() async {
   
   getIt.registerLazySingleton<WebSocketService>(
     () => WebSocketService(
-      wsUrl: dotenv.env['WS_URL'] ?? 'ws://localhost:3001',
+      wsUrl: wsUrl,
       storageService: getIt<StorageService>(),
     ),
   );
