@@ -145,7 +145,10 @@ const mapLanguageCode = (code) => {
     'hi': 'hin_Deva',
     'tr': 'tur_Latn',
     'nl': 'nld_Latn',
-    'pl': 'pol_Latn'
+    'pl': 'pol_Latn',
+    'ur': 'urd_Arab',  // Urdu
+    'ps': 'pbt_Arab',  // Pashto
+    'fa': 'prs_Arab'   // Dari (Persian/Farsi)
   };
   
   return mapping[code] || code;

@@ -332,7 +332,10 @@ INSERT INTO supported_languages (code, name, native_name) VALUES
 ('hi', 'Hindi', 'हिन्दी'),
 ('tr', 'Turkish', 'Türkçe'),
 ('nl', 'Dutch', 'Nederlands'),
-('pl', 'Polish', 'Polski')
+('pl', 'Polish', 'Polski'),
+('ur', 'Urdu', 'اردو'),
+('ps', 'Pashto', 'پښتو'),
+('fa', 'Dari', 'دری')
 ON CONFLICT (code) DO NOTHING;
 
 -- Create function to clean old data (for free tier limits)

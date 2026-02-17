@@ -17,7 +17,10 @@ const LANGUAGE_NAMES = {
   hi: 'Hindi',
   tr: 'Turkish',
   nl: 'Dutch',
-  pl: 'Polish'
+  pl: 'Polish',
+  ur: 'Urdu',
+  ps: 'Pashto',
+  fa: 'Dari'
 };
 
 export const getSupportedLanguages = async (req, res, next) => {
